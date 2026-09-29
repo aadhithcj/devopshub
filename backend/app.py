@@ -24,7 +24,8 @@ DB_CONFIG = {
 def health():
     return jsonify({
         "status": "ok",
-        "service": "devopshub-backend"
+        "service": "devopshub-backend",
+        "version": "1.0"
     })
 
 
