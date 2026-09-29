@@ -1,4 +1,4 @@
-name: Backend CI
+name: DevOpsHub CI
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
       - main
 
 jobs:
-  test:
+  backend-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -23,8 +23,30 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install backend dependencies
         run: pip install -r backend/requirements.txt
 
       - name: Run backend tests
         run: pytest backend/test_app.py
+
+  frontend-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
