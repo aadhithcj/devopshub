@@ -12,4 +12,4 @@ def test_health():
 
     assert data["status"] == "ok"
     assert data["service"] == "devopshub-backend"
-    assert data["version"] == "1.0"
+    assert data["version"] == "2.0"
