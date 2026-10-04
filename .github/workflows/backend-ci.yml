@@ -1,4 +1,7 @@
 name: DevOpsHub CI
+permissions:
+  contents: read
+  packages: write
 
 on:
   push:
@@ -54,15 +57,34 @@ jobs:
   docker-build:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      packages: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build Docker image
-        run: docker build -t devopshub-backend ./backend
+        run: |
+          docker build \
+            -t ghcr.io/${{ github.repository_owner }}/devopshub-backend:${{ github.sha }} \
+            -t ghcr.io/${{ github.repository_owner }}/devopshub-backend:latest \
+            ./backend
 
       - name: Run Docker container
-        run: docker run -d --name devopshub-backend-test -p 5000:5000 devopshub-backend
+        run: |
+          docker run -d \
+            --name devopshub-backend-test \
+            -p 5000:5000 \
+            ghcr.io/${{ github.repository_owner }}/devopshub-backend:${{ github.sha }}
 
       - name: Test Docker container
         run: |
@@ -72,3 +94,8 @@ jobs:
       - name: Stop Docker container
         if: always()
         run: docker stop devopshub-backend-test
+
+      - name: Push Docker image
+        run: |
+          docker push ghcr.io/${{ github.repository_owner }}/devopshub-backend:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository_owner }}/devopshub-backend:latest
