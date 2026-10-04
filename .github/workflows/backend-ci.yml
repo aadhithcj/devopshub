@@ -60,3 +60,15 @@ jobs:
 
       - name: Build Docker image
         run: docker build -t devopshub-backend ./backend
+
+      - name: Run Docker container
+        run: docker run -d --name devopshub-backend-test -p 5000:5000 devopshub-backend
+
+      - name: Test Docker container
+        run: |
+          sleep 3
+          curl --fail http://localhost:5000/api/health
+
+      - name: Stop Docker container
+        if: always()
+        run: docker stop devopshub-backend-test
