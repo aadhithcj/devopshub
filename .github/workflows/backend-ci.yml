@@ -131,51 +131,86 @@ jobs:
 
           aws sts get-caller-identity >/dev/null
 
-          # Create the remote script without a nested heredoc.
-          DEPLOY_SCRIPT=$(printf '%s\n' \
-            'set -eu' \
-            'DEPLOY_HOME="/home/ubuntu/devopshub"' \
-            'cd "$DEPLOY_HOME"' \
-            'docker network inspect devopshub >/dev/null' \
-            'docker inspect devopshub-db >/dev/null' \
-            'test -f "$DEPLOY_HOME/.env"' \
-            'test -n "${IMAGE:?Deployment image is missing}"' \
-            'OLD_IMAGE=$(docker inspect --format "{{.Config.Image}}" devopshub-backend)' \
-            'docker pull "$IMAGE"' \
-            'docker rm -f devopshub-backend' \
-            'if ! docker run -d --name devopshub-backend --network devopshub --restart unless-stopped --env-file "$DEPLOY_HOME/.env" -p 5000:5000 "$IMAGE"; then' \
-            '  echo "Container startup failed. Attempting rollback."' \
-            '  docker rm -f devopshub-backend 2>/dev/null || true' \
-            '  docker run -d --name devopshub-backend --network devopshub --restart unless-stopped --env-file "$DEPLOY_HOME/.env" -p 5000:5000 "$OLD_IMAGE"' \
-            '  exit 1' \
-            'fi' \
-            'for attempt in $(seq 1 20); do' \
-            '  if curl --fail --silent http://localhost:5000/api/health >/dev/null && curl --fail --silent http://localhost:5000/api/db-health >/dev/null; then' \
-            '    echo "Application and database health checks passed."' \
-            '    docker ps --filter name=devopshub-backend' \
-            '    exit 0' \
-            '  fi' \
-            '  sleep 3' \
-            'done' \
-            'echo "Health checks failed. Attempting rollback."' \
-            'docker logs --tail 50 devopshub-backend || true' \
-            'docker rm -f devopshub-backend 2>/dev/null || true' \
-            'docker run -d --name devopshub-backend --network devopshub --restart unless-stopped --env-file "$DEPLOY_HOME/.env" -p 5000:5000 "$OLD_IMAGE"' \
-            'for attempt in $(seq 1 20); do' \
-            '  if curl --fail --silent http://localhost:5000/api/health >/dev/null && curl --fail --silent http://localhost:5000/api/db-health >/dev/null; then' \
-            '    echo "Rollback successful; previous version is healthy."' \
-            '    exit 1' \
-            '  fi' \
-            '  sleep 3' \
-            'done' \
-            'echo "CRITICAL: Rollback health checks failed."' \
-            'docker logs --tail 50 devopshub-backend || true' \
-            'exit 1')
+          # Build the deployment script in a temporary file.
+          SCRIPT_FILE="$RUNNER_TEMP/deploy.sh"
+          printf 'IMAGE=%q\n' "$IMAGE" > "$SCRIPT_FILE"
 
-          # Pass IMAGE explicitly; SSM runs commands as root.
-          DEPLOY_SCRIPT="IMAGE='$IMAGE"$'\n'"$DEPLOY_SCRIPT"
+          cat >> "$SCRIPT_FILE" <<'REMOTE'
+          set -eu
 
-          PARAMETERS=$(jq -n --arg script "$DEPLOY_SCRIPT" \
+          DEPLOY_HOME="/home/ubuntu/devopshub"
+          cd "$DEPLOY_HOME"
+
+          docker network inspect devopshub >/dev/null
+          docker inspect devopshub-db >/dev/null
+          test -f "$DEPLOY_HOME/.env"
+
+          OLD_IMAGE=$(docker inspect --format '{{.Config.Image}}' devopshub-backend)
+
+          echo "Pulling image: $IMAGE"
+          docker pull "$IMAGE"
+
+          docker rm -f devopshub-backend
+
+          rollback() {
+            echo "Attempting rollback to $OLD_IMAGE"
+            docker rm -f devopshub-backend 2>/dev/null || true
+            docker run -d \
+              --name devopshub-backend \
+              --network devopshub \
+              --restart unless-stopped \
+              --env-file "$DEPLOY_HOME/.env" \
+              -p 5000:5000 \
+              "$OLD_IMAGE"
+          }
+
+          if ! docker run -d \
+            --name devopshub-backend \
+            --network devopshub \
+            --restart unless-stopped \
+            --env-file "$DEPLOY_HOME/.env" \
+            -p 5000:5000 \
+            "$IMAGE"; then
+            rollback
+            exit 1
+          fi
+
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://localhost:5000/api/health >/dev/null \
+              && curl --fail --silent http://localhost:5000/api/db-health >/dev/null; then
+              echo "Application and database health checks passed."
+              docker ps --filter name=devopshub-backend
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "New version failed health checks."
+          docker logs --tail 50 devopshub-backend || true
+          rollback
+
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://localhost:5000/api/health >/dev/null \
+              && curl --fail --silent http://localhost:5000/api/db-health >/dev/null; then
+              echo "Rollback successful; previous version is healthy."
+              exit 1
+            fi
+            sleep 3
+          done
+
+          echo "CRITICAL: Rollback health checks failed."
+          docker logs --tail 50 devopshub-backend || true
+          exit 1
+          REMOTE
+
+          # Validate the script locally before sending it.
+          bash -n "$SCRIPT_FILE"
+
+          # Base64 makes the SSM transport safe from shell quoting issues.
+          SCRIPT_B64=$(base64 -w 0 "$SCRIPT_FILE")
+          REMOTE_COMMAND="echo '$SCRIPT_B64' | base64 -d | bash"
+
+          PARAMETERS=$(jq -n --arg script "$REMOTE_COMMAND" \
             '{commands: [$script]}')
 
           COMMAND_ID=$(aws ssm send-command \
