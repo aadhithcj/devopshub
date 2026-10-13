@@ -191,13 +191,16 @@ jobs:
           # Wait up to 60 seconds for the API to become healthy.
           for attempt in $(seq 1 20); do
             if curl --fail --silent \
-              http://localhost:5000/api/health >/dev/null; then
+                http://localhost:5000/api/health >/dev/null \
+              && curl --fail --silent \
+                http://localhost:5000/api/db-health >/dev/null; then
 
-              echo "Deployment health check passed."
+              echo "Application and database health checks passed."
               docker ps --filter name=devopshub-backend
               exit 0
             fi
 
+            echo "Waiting for application and database readiness..."
             sleep 3
           done
 
@@ -207,13 +210,30 @@ jobs:
           docker logs --tail 50 devopshub-backend || true
           docker rm -f devopshub-backend 2>/dev/null || true
 
-          docker run -d \
+                    docker run -d \
             --name devopshub-backend \
             --network devopshub \
             --restart unless-stopped \
             --env-file "$HOME/devopshub/.env" \
             -p 5000:5000 \
             "$OLD_IMAGE"
+
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent \
+                http://localhost:5000/api/health >/dev/null \
+              && curl --fail --silent \
+                http://localhost:5000/api/db-health >/dev/null; then
+
+              echo "Rollback successful; previous version is healthy."
+              exit 1
+            fi
+
+            sleep 3
+          done
+
+          echo "CRITICAL: Rollback started, but health checks did not recover."
+          docker logs --tail 50 devopshub-backend
+          exit 1
 
           exit 1
           REMOTE
